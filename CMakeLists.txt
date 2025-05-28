@@ -314,6 +314,35 @@ endif()
 add_library(LibXml2 ${LIBXML2_HDRS} ${LIBXML2_SRCS})
 add_library(LibXml2::LibXml2 ALIAS LibXml2)
 
+# Build Rust buffer implementation
+if(NOT CMAKE_CROSSCOMPILING)
+    find_program(CARGO cargo)
+    if(CARGO)
+        set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust_target)
+        set(RUST_LIB ${RUST_TARGET_DIR}/release/libxml2buf.a)
+        
+        add_custom_command(
+            OUTPUT ${RUST_LIB}
+            COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+                    ${CARGO} build --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
+            COMMENT "Building Rust buffer implementation"
+        )
+        
+        add_custom_target(rust_buf ALL DEPENDS ${RUST_LIB})
+        add_dependencies(LibXml2 rust_buf)
+        target_link_libraries(LibXml2 PRIVATE ${RUST_LIB})
+    else()
+        message(WARNING "Cargo not found, falling back to C buffer implementation")
+        list(APPEND LIBXML2_SRCS buf.c)
+        target_sources(LibXml2 PRIVATE buf.c)
+    endif()
+else()
+    # For cross-compilation, fall back to C implementation
+    list(APPEND LIBXML2_SRCS buf.c)
+    target_sources(LibXml2 PRIVATE buf.c)
+endif()
+
 target_include_directories(
     LibXml2
     PUBLIC

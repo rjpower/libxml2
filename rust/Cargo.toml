@@ -1,0 +1,19 @@
+[package]
+name = "libxml2-buf"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "xml2buf"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+bitflags = "2.4"
+libc = "0.2"
+arbitrary = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+cc = "1.0"
+
+[features]
+default = []

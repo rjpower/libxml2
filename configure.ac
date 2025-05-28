@@ -55,6 +55,10 @@ AC_PROG_LN_S
 AC_PROG_MKDIR_P
 PKG_PROG_PKG_CONFIG
 
+dnl Check for Rust/Cargo for buffer implementation
+AC_CHECK_PROG(CARGO, cargo, cargo)
+AM_CONDITIONAL(HAVE_CARGO, test "x$CARGO" != "x")
+
 LT_INIT([disable-static])
 LT_LIB_M
 

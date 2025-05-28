@@ -396,7 +396,6 @@ configure_file(output: 'config.h', configuration: config_h)
 ## libxml2 library
 
 xml_src = [
-    'buf.c',
     'chvalid.c',
     'dict.c',
     'entities.c',
@@ -416,6 +415,30 @@ xml_src = [
     'xmlmemory.c',
     'xmlstring.c',
 ]
+
+# Build Rust buffer implementation
+cargo = find_program('cargo', required: false)
+if cargo.found() and not meson.is_cross_build()
+    rust_target_dir = meson.current_build_dir() / 'rust_target'
+    rust_lib = rust_target_dir / 'release' / 'libxml2buf.a'
+    
+    rust_buf = custom_target('rust_buf',
+        output: 'libxml2buf.a',
+        command: [cargo, 'build', '--release', 
+                  '--manifest-path', meson.current_source_dir() / 'rust' / 'Cargo.toml',
+                  '--target-dir', rust_target_dir],
+        build_by_default: true,
+        install: false,
+    )
+    
+    rust_buf_dep = declare_dependency(
+        link_with: rust_buf,
+    )
+    xml_deps += rust_buf_dep
+else
+    warning('Cargo not found or cross-compiling, falling back to C buffer implementation')
+    xml_src += 'buf.c'
+endif
 
 xml_opt_src = [
     [want_c14n, ['c14n.c']],

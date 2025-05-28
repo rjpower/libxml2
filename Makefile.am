@@ -40,10 +40,28 @@ libxml2_la_LIBADD = $(XML_PRIVATE_LIBS)
 libxml2_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined \
 		     -version-info $(LIBXML_VERSION_INFO)
 
-libxml2_la_SOURCES = buf.c chvalid.c dict.c entities.c encoding.c error.c \
+libxml2_la_SOURCES = chvalid.c dict.c entities.c encoding.c error.c \
 		     globals.c hash.c list.c parser.c parserInternals.c \
 		     SAX2.c threads.c tree.c uri.c valid.c xmlIO.c \
 		     xmlmemory.c xmlstring.c
+
+# Rust buffer implementation
+if HAVE_CARGO
+RUST_TARGET_DIR = $(builddir)/rust_target
+RUST_LIB = $(RUST_TARGET_DIR)/release/libxml2buf.a
+
+$(RUST_LIB): $(srcdir)/rust/Cargo.toml $(srcdir)/rust/src/*.rs
+	CARGO_TARGET_DIR=$(RUST_TARGET_DIR) $(CARGO) build --release --manifest-path $(srcdir)/rust/Cargo.toml
+
+libxml2_la_LIBADD += $(RUST_LIB)
+libxml2_la_DEPENDENCIES = $(RUST_LIB) $(DEPS)
+
+CLEANFILES += $(RUST_LIB)
+clean-local:
+	rm -rf $(RUST_TARGET_DIR)
+else
+libxml2_la_SOURCES += buf.c
+endif
 if WITH_C14N_SOURCES
 libxml2_la_SOURCES += c14n.c
 endif
