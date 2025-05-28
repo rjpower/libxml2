@@ -23,11 +23,15 @@ const BUF_FLAG_OOM: u32 = 1 << 0;
 const BUF_FLAG_OVERFLOW: u32 = 1 << 1;
 const BUF_FLAG_STATIC: u32 = 1 << 2;
 
-// We need to link with libxml2's memory functions for detached buffers
-// These are provided by xmlmemory.c and will be available at link time
+// reference xmlFree and xmlMalloc function pointers
+type XmlFreeFunc = unsafe extern "C" fn(*mut c_void);
+type XmlMallocFunc = unsafe extern "C" fn(usize) -> *mut c_void;
+type XmlReallocFunc = unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void;
+
 extern "C" {
-    fn xmlMalloc(size: usize) -> *mut c_void;
-    fn xmlFree(ptr: *mut c_void);
+    static xmlFree: XmlFreeFunc;
+    static xmlMalloc: XmlMallocFunc;
+    static xmlRealloc: XmlReallocFunc;
 }
 
 // Forward declarations for C types we need to interface with
@@ -146,12 +150,6 @@ impl XmlBuf {
 
     fn is_static(&self) -> bool {
         (self.flags & BUF_FLAG_STATIC) != 0
-    }
-
-    fn set_oom(&mut self) {
-        if !self.is_error() {
-            self.flags |= BUF_FLAG_OOM;
-        }
     }
 
     fn set_overflow(&mut self) {
@@ -327,18 +325,6 @@ impl XmlBuf {
         } else {
             self.content.as_ptr().wrapping_add(self.content_offset)
         }
-    }
-
-    fn content_ptr_mut(&mut self) -> *mut XmlChar {
-        if self.is_error() {
-            return ptr::null_mut();
-        }
-
-        if self.is_static() {
-            return ptr::null_mut(); // Static buffers are read-only
-        }
-
-        self.content.as_mut_ptr().wrapping_add(self.content_offset)
     }
 }
 
@@ -676,7 +662,7 @@ pub extern "C" fn xmlBufferCreate() -> *mut XmlBuffer {
     log_buf!("xmlBufferCreate()");
 
     unsafe {
-        let buffer = libc::malloc(std::mem::size_of::<XmlBuffer>()) as *mut XmlBuffer;
+        let buffer = xmlMalloc(std::mem::size_of::<XmlBuffer>()) as *mut XmlBuffer;
         if buffer.is_null() {
             return ptr::null_mut();
         }
@@ -685,9 +671,9 @@ pub extern "C" fn xmlBufferCreate() -> *mut XmlBuffer {
         buf.use_ = 0;
         buf.size = 256;
         buf.alloc = 1; // XML_BUFFER_ALLOC_IO
-        buf.content_io = libc::malloc(buf.size as usize) as *mut XmlChar;
+        buf.content_io = xmlMalloc(buf.size as usize) as *mut XmlChar;
         if buf.content_io.is_null() {
-            libc::free(buffer as *mut c_void);
+            xmlFree(buffer as *mut c_void);
             return ptr::null_mut();
         }
         buf.content = buf.content_io;
@@ -705,7 +691,7 @@ pub extern "C" fn xmlBufferCreateSize(size: usize) -> *mut XmlBuffer {
     }
 
     unsafe {
-        let buffer = libc::malloc(std::mem::size_of::<XmlBuffer>()) as *mut XmlBuffer;
+        let buffer = xmlMalloc(std::mem::size_of::<XmlBuffer>()) as *mut XmlBuffer;
         if buffer.is_null() {
             return ptr::null_mut();
         }
@@ -716,9 +702,9 @@ pub extern "C" fn xmlBufferCreateSize(size: usize) -> *mut XmlBuffer {
         buf.size = if size > 0 { size as u32 + 1 } else { 0 };
 
         if buf.size > 0 {
-            buf.content_io = libc::malloc(buf.size as usize) as *mut XmlChar;
+            buf.content_io = xmlMalloc(buf.size as usize) as *mut XmlChar;
             if buf.content_io.is_null() {
-                libc::free(buffer as *mut c_void);
+                xmlFree(buffer as *mut c_void);
                 return ptr::null_mut();
             }
             buf.content = buf.content_io;
@@ -751,11 +737,11 @@ pub extern "C" fn xmlBufferFree(buffer: *mut XmlBuffer) {
         let buf = &mut *buffer;
         if buf.alloc == 1 {
             // XML_BUFFER_ALLOC_IO
-            libc::free(buf.content_io as *mut c_void);
+            xmlFree(buf.content_io as *mut c_void);
         } else {
-            libc::free(buf.content as *mut c_void);
+            xmlFree(buf.content as *mut c_void);
         }
-        libc::free(buffer as *mut c_void);
+        xmlFree(buffer as *mut c_void);
     }
 }
 
@@ -950,8 +936,7 @@ pub extern "C" fn xmlBufferDump(_file: *mut libc::FILE, buffer: *mut XmlBuffer) 
             return 0;
         }
 
-        // For now, just return the buffer length
-        // Real implementation would write to file
+        libc::fwrite(buf.content as *const c_void, 1, buf.use_ as usize, _file);
         buf.use_ as c_int
     }
 }
@@ -1031,7 +1016,7 @@ pub extern "C" fn xmlBufferDetach(buffer: *mut XmlBuffer) -> *mut XmlChar {
         let result = if buf.alloc == 1 && buf.content != buf.content_io {
             // XML_BUFFER_ALLOC_IO
             // Need to copy content
-            let ptr = libc::malloc(buf.use_ as usize + 1) as *mut XmlChar;
+            let ptr = xmlMalloc(buf.use_ as usize + 1) as *mut XmlChar;
             if ptr.is_null() {
                 return ptr::null_mut();
             }
@@ -1040,7 +1025,7 @@ pub extern "C" fn xmlBufferDetach(buffer: *mut XmlBuffer) -> *mut XmlChar {
                 buf.content as *const c_void,
                 buf.use_ as usize + 1,
             );
-            libc::free(buf.content_io as *mut c_void);
+            xmlFree(buf.content_io as *mut c_void);
             ptr
         } else {
             buf.content
@@ -1081,7 +1066,7 @@ pub extern "C" fn xmlBufferGrow(buffer: *mut XmlBuffer, len: u32) -> c_int {
 
         // Reallocate buffer - simplified version
         let new_buf =
-            libc::realloc(buf.content as *mut c_void, new_size as usize + 1) as *mut XmlChar;
+            xmlRealloc(buf.content as *mut c_void, new_size as usize + 1) as *mut XmlChar;
         if new_buf.is_null() {
             return -1;
         }
@@ -1122,8 +1107,6 @@ pub extern "C" fn xmlBufferShrink(buffer: *mut XmlBuffer, len: u32) -> c_int {
         len as c_int
     }
 }
-
-// Placeholder implementations for more complex functions that need xmlBuffer and xmlParserInput definitions
 
 #[no_mangle]
 pub extern "C" fn xmlBufFromBuffer(buffer: *mut XmlBuffer) -> XmlBufPtr {
@@ -1287,9 +1270,20 @@ pub extern "C" fn xmlBufUpdateInput(
     }
 }
 
+#[allow(non_upper_case_globals)]
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    // For tests, provide xmlMalloc, xmlFree, and xmlRealloc as function pointers
+    #[no_mangle]
+    pub static xmlMalloc: XmlMallocFunc = libc::malloc;
+    
+    #[no_mangle]
+    pub static xmlFree: XmlFreeFunc = libc::free;
+    
+    #[no_mangle]
+    pub static xmlRealloc: XmlReallocFunc = libc::realloc;
 
     #[test]
     fn test_buf_create() {
@@ -1385,7 +1379,7 @@ mod tests {
 
         // Free the detached content
         unsafe {
-            libc::free(detached as *mut c_void);
+            xmlFree(detached as *mut c_void);
         }
 
         xmlBufFree(buf);

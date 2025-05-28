@@ -329,7 +329,6 @@ if(NOT CMAKE_CROSSCOMPILING)
                     ${CARGO} build --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
                     ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.lock
-                    ${CMAKE_CURRENT_SOURCE_DIR}/rust/build.rs
                     ${RUST_SOURCES}
             COMMENT "Building Rust buffer implementation"
         )
