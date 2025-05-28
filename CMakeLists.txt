@@ -224,7 +224,6 @@ set(
 
 set(
     LIBXML2_SRCS
-    buf.c
     chvalid.c
     dict.c
     encoding.c
@@ -319,13 +318,19 @@ if(NOT CMAKE_CROSSCOMPILING)
     find_program(CARGO cargo)
     if(CARGO)
         set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust_target)
-        set(RUST_LIB ${RUST_TARGET_DIR}/release/libxml2buf.a)
+        set(RUST_LIB ${RUST_TARGET_DIR}/debug/libxml2buf.a)
+        
+        # Find all Rust source files
+        file(GLOB_RECURSE RUST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/rust/src/*.rs)
         
         add_custom_command(
             OUTPUT ${RUST_LIB}
             COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
-                    ${CARGO} build --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
+                    ${CARGO} build --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml
+                    ${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.lock
+                    ${CMAKE_CURRENT_SOURCE_DIR}/rust/build.rs
+                    ${RUST_SOURCES}
             COMMENT "Building Rust buffer implementation"
         )
         
@@ -333,14 +338,11 @@ if(NOT CMAKE_CROSSCOMPILING)
         add_dependencies(LibXml2 rust_buf)
         target_link_libraries(LibXml2 PRIVATE ${RUST_LIB})
     else()
-        message(WARNING "Cargo not found, falling back to C buffer implementation")
-        list(APPEND LIBXML2_SRCS buf.c)
-        target_sources(LibXml2 PRIVATE buf.c)
+        message(FATAL_ERROR "Cargo not found, Rust buffer implementation required")
     endif()
 else()
-    # For cross-compilation, fall back to C implementation
-    list(APPEND LIBXML2_SRCS buf.c)
-    target_sources(LibXml2 PRIVATE buf.c)
+    # For cross-compilation, require Rust implementation
+    message(FATAL_ERROR "Cross-compilation requires Rust buffer implementation")
 endif()
 
 target_include_directories(

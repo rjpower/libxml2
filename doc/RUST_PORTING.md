@@ -18,6 +18,7 @@ will take and your reason for skipping a test approach.
 # Writing good CFFIs
 
 * Unless otherwise specified, the C interface exposed from Rust must be identical to the original interface.
+* You must port _every_ function in the module.
 * The Rust implementation must, as closely as possible, be a one-to-one match to the C implementation.
   - Prefer to use similar function names and style - don't switch to idiomatic Rust without a clear reason.
 * The Rust/C interface must be _safe_:
@@ -127,6 +128,80 @@ pub extern "C" fn xmlBarGetX(bar: XmlBarPtr) -> i32 {
 }
 ```
 
+# Critical: Avoiding Memory Corruption from Struct Layout Mismatches
+
+When defining Rust structs that correspond to C structs (especially when using `#[repr(C)]`), you **MUST** ensure complete field compatibility. Incomplete or incorrect struct definitions will cause silent memory corruption that can manifest far from the actual bug location.
+
+## Common Mistakes to Avoid
+
+### Incomplete Struct Definitions
+
+**WRONG** - This will cause memory corruption:
+```rust
+// Partial definition of xmlParserInput - DANGEROUS!
+#[repr(C)]
+pub struct XmlParserInput {
+    pub base: *const XmlChar,
+    pub cur: *const XmlChar,
+    pub end: *const XmlChar,
+    // Missing 14+ other fields!
+}
+```
+
+**CORRECT** - Complete field definition:
+```rust
+// Complete definition matching C struct exactly
+#[repr(C)]
+pub struct XmlParserInput {
+    pub buf: VoidPtr,
+    pub filename: *const c_char,
+    pub directory: *const c_char,
+    pub base: *const XmlChar,
+    pub cur: *const XmlChar,
+    pub end: *const XmlChar,
+    pub length: c_int,
+    pub line: c_int,
+    pub col: c_int,
+    pub consumed: u64,
+    pub free: VoidPtr,
+    pub encoding: *const XmlChar,
+    pub version: *const XmlChar,
+    pub flags: c_int,
+    pub id: c_int,
+    pub parent_consumed: u64,
+    pub entity: *mut c_void,
+}
+```
+
+## Verification Steps
+
+**Before defining any C struct in Rust:**
+
+1. **Find the complete C definition** in the original header files
+2. **Count all fields** - every single field must be present
+3. **Verify field types** match exactly (sizes, signedness, pointer types)
+4. **Check field order** - must match C declaration order exactly
+5. **Verify struct size** using `std::mem::size_of::<YourStruct>()` vs C `sizeof(struct)`
+
+## Why This Matters
+
+- Incomplete structs cause **silent memory corruption**
+- C code writing beyond the Rust struct boundary corrupts adjacent memory
+- Symptoms appear far from the actual bug location (e.g., parser crashes from buffer corruption)
+- Memory sanitizers may not detect these issues immediately
+- The corruption can be intermittent and hard to reproduce
+
+## Detection Strategy
+
+If you encounter mysterious crashes or corruption during integration testing:
+
+1. **Verify all struct sizes** - compare Rust `size_of` with C `sizeof`
+2. **Check struct definitions** - ensure every field is present and correctly typed
+3. **Use memory debugging tools** - run with AddressSanitizer, Valgrind, or similar
+4. **Create minimal test cases** to isolate the corruption
+
+This type of bug can waste significant debugging time, so **always verify struct completeness** before proceeding with implementation.
+
 # Porting, Building, Testing, and Debugging.
 
 When porting a module, follow these steps:
@@ -161,7 +236,9 @@ data.
 
 You may now proceed to write a C test module which exercises your individual
 Rust module. This should be named `test_rust_ffi_{filename}.c` and should be a
-minimal C program which exercises the CFFI interface of your Rust module.
+minimal C program which exercises the CFFI interface of your Rust module. This C
+module should _explicitly_ link against your Rust code, and not use the default
+build system.
 
 ### Integration tests
 

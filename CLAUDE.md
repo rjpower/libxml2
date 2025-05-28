@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Environment
+
+The user has configured grep = `rg` and find = `fd`. Adjust your commands accordingly.
+
 ## Build Commands
 
 libxml2 supports three build systems: Autotools, CMake, and Meson.

@@ -4,6 +4,12 @@ version = 4
 
 [[package]]
 name = "arbitrary"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c7d1523aa3a127adf8b27af2404c03c12825b4c4d0698f01648d63fa9df62ee"
+
+[[package]]
+name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dde20b3d026af13f561bdd0f15edf01fc734f0dafcedbaf42bba506a9517f223"
@@ -44,13 +50,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
 
 [[package]]
+name = "libfuzzer-sys"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad9e2afbd25dd3fd52743daa04034276fa7ef9391b28c41d1f5c8ce258fe428b"
+dependencies = [
+ "arbitrary 0.1.1",
+ "cc",
+]
+
+[[package]]
 name = "libxml2-buf"
 version = "0.1.0"
 dependencies = [
- "arbitrary",
+ "arbitrary 1.4.1",
  "bitflags",
  "cc",
  "libc",
+ "libfuzzer-sys",
 ]
 
 [[package]]
