@@ -78,7 +78,6 @@ pub struct XmlBuf {
     flags: u32,
     content_offset: usize,     // Offset from start of Vec to current content
     static_mem: Option<usize>, // For static buffers - store as usize for Send/Sync
-    mem_ptr: Option<usize>,    // Memory allocated with xmlMalloc - store as usize for Send/Sync
 }
 
 impl XmlBuf {
@@ -87,25 +86,18 @@ impl XmlBuf {
             return Err(());
         }
 
-        // Allocate with xmlMalloc for compatibility with C code
-        let mem_ptr = unsafe { xmlMalloc(size + 1) };
-        if mem_ptr.is_null() {
-            return Err(());
-        }
-
-        unsafe {
-            *(mem_ptr as *mut u8) = 0; // Null terminate
-        }
+        let mut content = Vec::with_capacity(size + 1);
+        content.resize(size + 1, 0);
+        content[0] = 0; // Null terminate
 
         Ok(XmlBuf {
-            content: Vec::new(), // Not used when mem_ptr is set
+            content,
             use_: 0,
             size,
             max_size: usize::MAX - 1,
             flags: 0,
             content_offset: 0,
             static_mem: None,
-            mem_ptr: Some(mem_ptr as usize),
         })
     }
 
@@ -1051,6 +1043,8 @@ pub extern "C" fn xmlBufferGrow(buffer: *mut XmlBuffer, len: c_int) -> c_int {
         if new_buf.is_null() {
             return -1;
         }
+        
+        // Only copy if there's existing content
         if !buf.content.is_null() {
             libc::memcpy(new_buf as *mut c_void, buf.content as *const c_void, buf.use_ as usize + 1);
             // Free the old buffer
@@ -1194,8 +1188,6 @@ pub extern "C" fn xmlBufBackToBuffer(buf: XmlBufPtr, ret: *mut XmlBuffer) -> c_i
             } else {
                 // Extract the Vec's pointer and prevent deallocation
                 let vec_ptr = buffer.content.as_mut_ptr();
-                let vec_capacity = buffer.content.capacity();
-                let vec_len = buffer.content.len();
                 
                 // Leak the Vec to prevent it from being deallocated
                 std::mem::forget(buffer.content);
