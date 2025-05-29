@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "xml2buf"
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 bitflags = "2.4"

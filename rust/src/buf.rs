@@ -31,15 +31,14 @@ type XmlReallocFunc = unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void;
 extern "C" {
     static xmlFree: XmlFreeFunc;
     static xmlMalloc: XmlMallocFunc;
-    static xmlRealloc: XmlReallocFunc;
 }
 
 // Forward declarations for C types we need to interface with
 #[repr(C)]
 pub struct XmlBuffer {
     pub content: *mut XmlChar,
-    pub use_: u32,
-    pub size: u32,
+    pub use_: c_int,
+    pub size: c_int,
     pub alloc: c_int,
     pub content_io: *mut XmlChar,
 }
@@ -79,6 +78,7 @@ pub struct XmlBuf {
     flags: u32,
     content_offset: usize,     // Offset from start of Vec to current content
     static_mem: Option<usize>, // For static buffers - store as usize for Send/Sync
+    mem_ptr: Option<usize>,    // Memory allocated with xmlMalloc - store as usize for Send/Sync
 }
 
 impl XmlBuf {
@@ -87,18 +87,25 @@ impl XmlBuf {
             return Err(());
         }
 
-        let mut content = Vec::with_capacity(size + 1);
-        content.resize(size + 1, 0);
-        content[0] = 0; // Null terminate
+        // Allocate with xmlMalloc for compatibility with C code
+        let mem_ptr = unsafe { xmlMalloc(size + 1) };
+        if mem_ptr.is_null() {
+            return Err(());
+        }
+
+        unsafe {
+            *(mem_ptr as *mut u8) = 0; // Null terminate
+        }
 
         Ok(XmlBuf {
-            content,
+            content: Vec::new(), // Not used when mem_ptr is set
             use_: 0,
             size,
             max_size: usize::MAX - 1,
             flags: 0,
             content_offset: 0,
             static_mem: None,
+            mem_ptr: Some(mem_ptr as usize),
         })
     }
 
@@ -671,12 +678,12 @@ pub extern "C" fn xmlBufferCreate() -> *mut XmlBuffer {
         buf.use_ = 0;
         buf.size = 256;
         buf.alloc = 1; // XML_BUFFER_ALLOC_IO
-        buf.content_io = xmlMalloc(buf.size as usize) as *mut XmlChar;
-        if buf.content_io.is_null() {
+        buf.content = xmlMalloc(buf.size as usize) as *mut XmlChar;
+        if buf.content.is_null() {
             xmlFree(buffer as *mut c_void);
             return ptr::null_mut();
         }
-        buf.content = buf.content_io;
+        buf.content_io = ptr::null_mut(); // Zero-initialize, not used
         *buf.content = 0;
 
         log_buf!("xmlBufferCreate SUCCESS - buffer={:p}", buffer);
@@ -699,20 +706,19 @@ pub extern "C" fn xmlBufferCreateSize(size: usize) -> *mut XmlBuffer {
         let buf = &mut *buffer;
         buf.use_ = 0;
         buf.alloc = 1; // XML_BUFFER_ALLOC_IO
-        buf.size = if size > 0 { size as u32 + 1 } else { 0 };
+        buf.size = if size > 0 { size as c_int + 1 } else { 0 };
 
         if buf.size > 0 {
-            buf.content_io = xmlMalloc(buf.size as usize) as *mut XmlChar;
-            if buf.content_io.is_null() {
+            buf.content = xmlMalloc(buf.size as usize) as *mut XmlChar;
+            if buf.content.is_null() {
                 xmlFree(buffer as *mut c_void);
                 return ptr::null_mut();
             }
-            buf.content = buf.content_io;
             *buf.content = 0;
         } else {
-            buf.content_io = ptr::null_mut();
             buf.content = ptr::null_mut();
         }
+        buf.content_io = ptr::null_mut(); // Zero-initialize, not used
 
         buffer
     }
@@ -735,12 +741,8 @@ pub extern "C" fn xmlBufferFree(buffer: *mut XmlBuffer) {
 
     unsafe {
         let buf = &mut *buffer;
-        if buf.alloc == 1 {
-            // XML_BUFFER_ALLOC_IO
-            xmlFree(buf.content_io as *mut c_void);
-        } else {
-            xmlFree(buf.content as *mut c_void);
-        }
+        // Always free content, content_io is always null
+        xmlFree(buf.content as *mut c_void);
         xmlFree(buffer as *mut c_void);
     }
 }
@@ -759,14 +761,8 @@ pub extern "C" fn xmlBufferEmpty(buffer: *mut XmlBuffer) {
 
         buf.use_ = 0;
 
-        if buf.alloc == 1 {
-            // XML_BUFFER_ALLOC_IO
-            buf.size += (buf.content as usize - buf.content_io as usize) as u32;
-            buf.content = buf.content_io;
-            *buf.content = 0;
-        } else {
-            *buf.content = 0;
-        }
+        // Simple empty - just reset to beginning
+        *buf.content = 0;
     }
 }
 
@@ -802,10 +798,12 @@ pub extern "C" fn xmlBufferResize(buffer: *mut XmlBuffer, size: u32) -> c_int {
 
     unsafe {
         let buf = &*buffer;
-        if size < buf.size {
+        if size < buf.size as u32 {
             return 1;
         }
-        let res = xmlBufferGrow(buffer, size - buf.use_);
+        // log size and use_
+        log_buf!("xmlBufferResize - size={}, use_={}", size, buf.use_);
+        let res = xmlBufferGrow(buffer, (size as c_int) - buf.use_);
         if res < 0 {
             0
         } else {
@@ -848,8 +846,8 @@ pub extern "C" fn xmlBufferAddHead(
         let buf = &mut *buffer;
 
         // Ensure we have enough space
-        if (actual_len as u32) >= buf.size - buf.use_ {
-            if xmlBufferGrow(buffer, actual_len as u32) < 0 {
+        if actual_len as c_int >= buf.size - buf.use_ as c_int {
+            if xmlBufferGrow(buffer, actual_len as c_int) < 0 {
                 return -1;
             }
         }
@@ -865,7 +863,7 @@ pub extern "C" fn xmlBufferAddHead(
             str_ptr as *const c_void,
             actual_len,
         );
-        buf.use_ += actual_len as u32;
+        buf.use_ += actual_len as c_int;
 
         0
     }
@@ -897,12 +895,12 @@ pub extern "C" fn xmlBufferWriteQuotedString(buffer: *mut XmlBuffer, string: *co
 
         if string_str.contains('"') {
             if string_str.contains('\'') {
-                xmlBufferCCat(buffer, "\"".as_ptr() as *const c_char);
+                xmlBufferCCat(buffer, b"\"\0".as_ptr() as *const c_char);
 
                 // Replace quotes with &quot;
                 for ch in string_str.chars() {
                     if ch == '"' {
-                        xmlBufferAdd(buffer, "&quot;".as_ptr(), 6);
+                        xmlBufferAdd(buffer, b"&quot;\0".as_ptr(), 6);
                     } else {
                         let mut bytes = [0u8; 4];
                         let encoded = ch.encode_utf8(&mut bytes);
@@ -910,16 +908,16 @@ pub extern "C" fn xmlBufferWriteQuotedString(buffer: *mut XmlBuffer, string: *co
                     }
                 }
 
-                xmlBufferCCat(buffer, "\"".as_ptr() as *const c_char);
+                xmlBufferCCat(buffer, b"\"\0".as_ptr() as *const c_char);
             } else {
-                xmlBufferCCat(buffer, "'".as_ptr() as *const c_char);
+                xmlBufferCCat(buffer, b"'\0".as_ptr() as *const c_char);
                 xmlBufferCat(buffer, string);
-                xmlBufferCCat(buffer, "'".as_ptr() as *const c_char);
+                xmlBufferCCat(buffer, b"'\0".as_ptr() as *const c_char);
             }
         } else {
-            xmlBufferCCat(buffer, "\"".as_ptr() as *const c_char);
+            xmlBufferCCat(buffer, b"\"\0".as_ptr() as *const c_char);
             xmlBufferCat(buffer, string);
-            xmlBufferCCat(buffer, "\"".as_ptr() as *const c_char);
+            xmlBufferCCat(buffer, b"\"\0".as_ptr() as *const c_char);
         }
     }
 }
@@ -995,7 +993,7 @@ pub extern "C" fn xmlBufferAdd(
                 str_ptr as *const c_void,
                 actual_len,
             );
-            buf.use_ += actual_len as u32;
+            buf.use_ += actual_len as c_int;
             *buf.content.wrapping_add(buf.use_ as usize) = 0; // Null terminate
             log_buf!("xmlBufferAdd SUCCESS - buffer now has {} bytes", buf.use_);
             0 // XML_ERR_OK
@@ -1013,27 +1011,12 @@ pub extern "C" fn xmlBufferDetach(buffer: *mut XmlBuffer) -> *mut XmlChar {
 
     unsafe {
         let buf = &mut *buffer;
-        let result = if buf.alloc == 1 && buf.content != buf.content_io {
-            // XML_BUFFER_ALLOC_IO
-            // Need to copy content
-            let ptr = xmlMalloc(buf.use_ as usize + 1) as *mut XmlChar;
-            if ptr.is_null() {
-                return ptr::null_mut();
-            }
-            libc::memcpy(
-                ptr as *mut c_void,
-                buf.content as *const c_void,
-                buf.use_ as usize + 1,
-            );
-            xmlFree(buf.content_io as *mut c_void);
-            ptr
-        } else {
-            buf.content
-        };
+        // Always detach content pointer directly
+        let result = buf.content;
 
         // Clear buffer
-        buf.content_io = ptr::null_mut();
         buf.content = ptr::null_mut();
+        buf.content_io = ptr::null_mut();
         buf.size = 0;
         buf.use_ = 0;
 
@@ -1042,7 +1025,7 @@ pub extern "C" fn xmlBufferDetach(buffer: *mut XmlBuffer) -> *mut XmlChar {
 }
 
 #[no_mangle]
-pub extern "C" fn xmlBufferGrow(buffer: *mut XmlBuffer, len: u32) -> c_int {
+pub extern "C" fn xmlBufferGrow(buffer: *mut XmlBuffer, len: c_int) -> c_int {
     if buffer.is_null() {
         return -1;
     }
@@ -1053,27 +1036,32 @@ pub extern "C" fn xmlBufferGrow(buffer: *mut XmlBuffer, len: u32) -> c_int {
             return 0;
         }
 
-        // Simplified growth logic
         let new_size = if buf.size > len {
-            if buf.size <= i32::MAX as u32 / 2 {
+            if buf.size <= i32::MAX as c_int / 2 {
                 buf.size * 2
             } else {
-                i32::MAX as u32
+                i32::MAX as c_int
             }
         } else {
             buf.use_ + len + 1
         };
 
-        // Reallocate buffer - simplified version
-        let new_buf =
-            xmlRealloc(buf.content as *mut c_void, new_size as usize + 1) as *mut XmlChar;
+        // allocate a new buffer, copy and return
+        let new_buf = xmlMalloc(new_size as usize + 1) as *mut XmlChar; 
         if new_buf.is_null() {
             return -1;
         }
-
+        if !buf.content.is_null() {
+            libc::memcpy(new_buf as *mut c_void, buf.content as *const c_void, buf.use_ as usize + 1);
+            // Free the old buffer
+            xmlFree(buf.content as *mut c_void);
+        }
+        
+        // Update content pointer, keep content_io as null
         buf.content = new_buf;
+        buf.content_io = ptr::null_mut();
         buf.size = new_size;
-        (buf.size - buf.use_ - 1) as c_int
+        (buf.size - buf.use_ - 1) as c_int 
     }
 }
 
@@ -1085,24 +1073,18 @@ pub extern "C" fn xmlBufferShrink(buffer: *mut XmlBuffer, len: u32) -> c_int {
 
     unsafe {
         let buf = &mut *buffer;
-        if len == 0 || len > buf.use_ {
+        if len == 0 || len > buf.use_ as u32 {
             return if len == 0 { 0 } else { -1 };
         }
 
-        buf.use_ -= len;
+        buf.use_ -= len as c_int;
 
-        if buf.alloc == 1 {
-            // XML_BUFFER_ALLOC_IO
-            buf.content = buf.content.wrapping_add(len as usize);
-            buf.size -= len;
-        } else {
-            // Move content to beginning
-            libc::memmove(
-                buf.content as *mut c_void,
-                buf.content.wrapping_add(len as usize) as *const c_void,
-                buf.use_ as usize + 1,
-            );
-        }
+        // Always move content to beginning (simple approach)
+        libc::memmove(
+            buf.content as *mut c_void,
+            buf.content.wrapping_add(len as usize) as *const c_void,
+            buf.use_ as usize + 1,
+        );
 
         len as c_int
     }
@@ -1170,7 +1152,7 @@ pub extern "C" fn xmlBufBackToBuffer(buf: XmlBufPtr, ret: *mut XmlBuffer) -> c_i
     let mutex = get_buffers();
     let mut m = mutex.lock().unwrap();
 
-    if let Some(buffer) = m.remove(&buf) {
+    if let Some(mut buffer) = m.remove(&buf) {
         if buffer.is_error() || buffer.is_static() || buffer.use_ >= i32::MAX as usize {
             unsafe {
                 let ret_struct = &mut *ret;
@@ -1184,25 +1166,45 @@ pub extern "C" fn xmlBufBackToBuffer(buf: XmlBufPtr, ret: *mut XmlBuffer) -> c_i
 
         unsafe {
             let ret_struct = &mut *ret;
-            ret_struct.use_ = buffer.use_ as u32;
+            ret_struct.use_ = buffer.use_ as c_int;
 
             if buffer.size >= i32::MAX as usize {
-                ret_struct.size = i32::MAX as u32;
+                ret_struct.size = i32::MAX as c_int;
             } else {
-                ret_struct.size = buffer.size as u32 + 1;
+                ret_struct.size = buffer.size as c_int + 1;
             }
 
-            ret_struct.alloc = 1; // XML_BUFFER_ALLOC_IO
-
-            // Transfer ownership of content
-            let mut content = buffer.content;
-            content.shrink_to(buffer.use_ + 1);
-
-            let ptr = content.as_mut_ptr();
-            ret_struct.content = ptr.wrapping_add(buffer.content_offset);
-            ret_struct.content_io = ptr;
-            std::mem::forget(content); // Prevent deallocation
-
+            ret_struct.alloc = 3; // XML_BUFFER_ALLOC_IO
+            
+            // Transfer ownership of the buffer content like the C version does
+            // First, ensure the content is at the beginning of the allocation
+            if buffer.content_offset > 0 {
+                // Need to move content to start of buffer
+                let content_ptr = xmlMalloc(buffer.use_ + 1) as *mut XmlChar;
+                if content_ptr.is_null() {
+                    return -1;
+                }
+                libc::memcpy(
+                    content_ptr as *mut c_void,
+                    buffer.content.as_ptr().add(buffer.content_offset) as *const c_void,
+                    buffer.use_ + 1,
+                );
+                ret_struct.content = content_ptr;
+                ret_struct.content_io = content_ptr;
+            } else {
+                // Extract the Vec's pointer and prevent deallocation
+                let vec_ptr = buffer.content.as_mut_ptr();
+                let vec_capacity = buffer.content.capacity();
+                let vec_len = buffer.content.len();
+                
+                // Leak the Vec to prevent it from being deallocated
+                std::mem::forget(buffer.content);
+                buffer.content = Vec::new(); // Replace with empty vec
+                
+                ret_struct.content = vec_ptr;
+                ret_struct.content_io = vec_ptr;
+            }
+            
             0
         }
     } else {
